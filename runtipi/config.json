@@ -1,0 +1,21 @@
+{
+  "name": "Connection Router",
+  "id": "wizard-connection-router",
+  "wizard_type": "service",
+  "available": true,
+  "short_desc": "Route app model and service calls with explicit owner choices.",
+  "author": "Humanity Labs",
+  "port": 8802,
+  "categories": ["network"],
+  "description": "Source-only slice; package image has not been published. Requires installed registry and grant snapshots from App Manager.",
+  "tipi_version": 1,
+  "version": "0.1.0",
+  "source": "https://github.com/humanitylabs-org/wizard-connection-router",
+  "exposable": false,
+  "supported_architectures": ["amd64", "arm64"],
+  "dynamic_config": true,
+  "min_tipi_version": "4.8.0",
+  "uid": 1000,
+  "gid": 1000,
+  "form_fields": []
+}
