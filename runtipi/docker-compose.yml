@@ -1,0 +1,22 @@
+# Packaging sketch only: image is not built or published in slice 1.
+# App Manager must populate wizard/apps.json and wizard/grants.json snapshots.
+services:
+  wizard-connection-router:
+    image: ghcr.io/humanitylabs-org/wizard-connection-router:0.1.0
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 128
+    mem_limit: 128m
+    environment:
+      WIZARD_APPS_JSON: /run/wizard/apps.json
+      WIZARD_GRANTS_FILE: /run/wizard/grants.json
+      WIZARD_ROUTER_DATA_DIR: /data
+      WIZARD_ROUTER_PORT: "8802"
+    volumes:
+      - ${APP_DATA_DIR}/data:/data
+      - ${APP_DATA_DIR}/wizard:/run/wizard:ro
+    x-runtipi:
+      is_main: true
+      internal_port: 8802
