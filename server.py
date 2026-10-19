@@ -18,7 +18,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 APP_ID = "wizard-connection-router"
 TIERS = ("fast", "standard", "frontier")
 CODES = {"signed_out", "expired", "limit", "unreachable", "provider_error", "needs_owner", "blocked"}
@@ -503,10 +503,14 @@ class Handler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if path == "/health" and self.command == "GET":
             return self.send_json(200, {"ok": True, "version": VERSION})
-        if path == "/" and self.command == "GET":
-            raw = (Path(__file__).parent / "static/index.html").read_bytes()
+        static = {"/": ("index.html", "text/html"), "/appearance.js": ("appearance.js", "text/javascript"),
+                  "/appearance.css": ("appearance.css", "text/css")}
+        if path in static and self.command == "GET":
+            name, content_type = static[path]
+            raw = (Path(__file__).parent / "static" / name).read_bytes()
             self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Type", content_type + "; charset=utf-8")
+            self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; frame-ancestors 'self'")
             self.send_header("Content-Length", str(len(raw)))
             self.end_headers()
             return self.wfile.write(raw)
