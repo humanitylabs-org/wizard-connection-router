@@ -4,7 +4,7 @@ x-runtipi:
   overrides: []
 services:
   wizard-connection-router:
-    image: ghcr.io/humanitylabs-org/wizard-connection-router:0.1.0@sha256:219a8fc1a520a1ecca7942923bd7cf5dda686d83f0a91a451b1ef85c5b56e385
+    image: ghcr.io/humanitylabs-org/wizard-connection-router:0.1.1@sha256:15bacfbc52715bbe0efd5a6ea2b058d2901fb189e1c4f786844d78faf6125997
     user: "1000:1000"
     read_only: true
     cap_drop: [ALL]

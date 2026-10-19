@@ -1,0 +1,37 @@
+/* Nebula defaults in a standalone tab; hosted values come from Appearance v1. */
+:root {
+  color-scheme: dark;
+  --wz-base: #05030c;
+  --wz-canvas: var(--wz-base);
+  --wz-chrome: rgba(12,8,26,.82);
+  --wz-overlay: rgba(28,19,58,.72);
+  --wz-text: #f3efff;
+  --wz-text-secondary: #b9b0d8;
+  --wz-text-muted: #7d74a3;
+  --wz-border: rgba(205,190,255,.24);
+  --wz-accent: #b99bff;
+  --wz-on-accent: #05030c;
+  --wz-surface: color-mix(in srgb, var(--wz-text) 6%, transparent);
+  --wz-surface-raised: color-mix(in srgb, var(--wz-text) 10%, transparent);
+  --wz-accent-soft: color-mix(in srgb, var(--wz-accent) 16%, transparent);
+  --wz-reader-surface: var(--wz-canvas);
+  --wz-font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --wz-error: color-mix(in srgb, var(--wz-text) 72%, #e34848);
+}
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+    --wz-base: #f6f3ec;
+    --wz-text: #1d1b17;
+    --wz-text-secondary: #514b42;
+    --wz-text-muted: #6d665c;
+    --wz-border: rgba(29,27,23,.24);
+    --wz-accent: #64429a;
+    --wz-on-accent: #fffdf8;
+  }
+}
+html, body { background: var(--wz-canvas); color: var(--wz-text); }
+body { font-family: var(--wz-font-ui); }
+:focus-visible { outline: 2px solid var(--wz-accent); outline-offset: 3px; }
+html[data-skin="signal"] :is(button, input, section, .row) { border-radius: 2px; }
+html[data-skin="signal"] :is(button, label, .state) { font-family: ui-monospace, monospace; }
