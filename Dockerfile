@@ -3,7 +3,7 @@ ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 WIZARD_ROUTER_PORT=8802
 LABEL org.opencontainers.image.source="https://github.com/humanitylabs-org/wizard-connection-router" \
       org.opencontainers.image.licenses="MIT"
 WORKDIR /app
-RUN mkdir /data && chown 1000:1000 /data
+RUN pip install --no-cache-dir PyYAML==6.0.3 && mkdir /data && chown 1000:1000 /data
 COPY server.py SKILL.md LICENSE ./
 COPY mcp/ ./mcp/
 COPY static/ ./static/

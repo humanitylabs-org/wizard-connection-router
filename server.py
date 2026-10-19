@@ -12,17 +12,18 @@ import secrets
 import tempfile
 import threading
 import time
+import yaml
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
-VERSION = "0.1.1"
+VERSION = "0.1.2"
 APP_ID = "wizard-connection-router"
 TIERS = ("fast", "standard", "frontier")
 CODES = {"signed_out", "expired", "limit", "unreachable", "provider_error", "needs_owner", "blocked"}
-FIX = "/apps/wizard-connection-router/"
+FIX = "/wizard-os-home/?open=wizard-connection-router"
 ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 MAX_BODY = 1024 * 1024
 LOG = logging.getLogger("router")
@@ -96,7 +97,7 @@ def endpoint(app):
 
 
 def fix_for(app):
-    return f"/apps/{app['id']}/"
+    return f"/wizard-os-home/?open={app['id']}"
 
 
 class Router:
@@ -181,6 +182,30 @@ class Router:
                 for field in ("api", "mcp", "view"):
                     if app.get(field) is not None and not isinstance(app[field], dict):
                         raise ValueError()
+                app = copy.deepcopy(app)
+                recipes = os.environ.get("WIZARD_RECIPES_DIR")
+                if recipes and "requires" not in app:
+                    app_id, _, store = app.get("urn", "").partition(":")
+                    if app_id == app["id"] and identifier(store):
+                        root = Path(recipes) / store / "apps" / app_id
+                        try:
+                            # Ignore a staged recipe until WAM records that exact release.
+                            if (root / ".wizard-commit").read_text().strip() == app.get("commit"):
+                                source = (root / "wizard.md").read_text()
+                                if len(source) > 262144 or not source.startswith("---\n"):
+                                    raise ValueError()
+                                manifest = yaml.safe_load(source.split("---", 2)[1])
+                                if manifest.get("id") != app_id or str(manifest.get("version")) != app.get("version"):
+                                    raise ValueError()
+                                app["requires"] = manifest.get("requires", {})
+                        except FileNotFoundError:
+                            pass
+                # Owner deployment addresses belong in server-side config, not source
+                # or the credential-free registry. They never override uninstalled apps.
+                address = self.grants().get("provider_endpoints", {}).get(app["id"])
+                if address:
+                    app["api"] = {"internal": address}
+                    endpoint(app)  # Fail closed on malformed owner addresses.
                 req = app.get("requires", {})
                 if not isinstance(req, dict) or not isinstance(req.get("models", {}), dict) or not isinstance(req.get("services", []), list):
                     raise ValueError()
@@ -192,7 +217,7 @@ class Router:
                         raise ValueError()
                 apps[app["id"]] = app
             return data, apps
-        except (OSError, ValueError, TypeError):
+        except (OSError, ValueError, TypeError, AttributeError, yaml.YAMLError):
             raise Fault("blocked", "Installed apps registry is unavailable or malformed.", status=503) from None
 
     def providers(self, apps):

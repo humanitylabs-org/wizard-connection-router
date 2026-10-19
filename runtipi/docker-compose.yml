@@ -4,7 +4,7 @@ x-runtipi:
   overrides: []
 services:
   wizard-connection-router:
-    image: ghcr.io/humanitylabs-org/wizard-connection-router:0.1.1@sha256:15bacfbc52715bbe0efd5a6ea2b058d2901fb189e1c4f786844d78faf6125997
+    image: ghcr.io/humanitylabs-org/wizard-connection-router:0.1.2@sha256:4ade407a102235a02ec5ac5644768f9a48c9dfb2a11eb93899508239c826fa58
     user: "1000:1000"
     read_only: true
     cap_drop: [ALL]
@@ -13,12 +13,14 @@ services:
     mem_limit: 128m
     environment:
       WIZARD_APPS_JSON: /run/wizard/apps.json
+      WIZARD_RECIPES_DIR: /run/recipes
       WIZARD_GRANTS_FILE: /run/grants/grants.json
       WIZARD_ROUTER_DATA_DIR: /data
       WIZARD_ROUTER_PORT: "8802"
     volumes:
       - ${APP_DATA_DIR}/data:/data
       - ${ROOT_FOLDER_HOST}/app-data/wizard-os:/run/wizard:ro
+      - ${ROOT_FOLDER_HOST}/repos:/run/recipes:ro
       - ${APP_DATA_DIR}/wizard:/run/grants:ro
     ports:
       - "127.0.0.1:${APP_PORT}:8802"
