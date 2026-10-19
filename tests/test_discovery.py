@@ -23,8 +23,10 @@ class Discovery(unittest.TestCase):
                 (recipe/'.wizard-commit').write_text('b'*40)
                 self.assertNotIn('requires',router.registry()[1]['wisdom'])
                 (recipe/'.wizard-commit').write_text('a'*40)
-                (recipe/'wizard.md').write_text('---\nid: wisdom\nversion: other\n---\n')
+                (recipe/'wizard.md').write_text('---\nid: wisdom\nversion: other\nrequires: {models: {}}\n---\n')
                 with self.assertRaises(Fault):router.registry()
+                (recipe/'wizard.md').write_text('---\nid: wisdom\n---\n')
+                self.assertNotIn('requires',router.registry()[1]['wisdom'])
             self.assertEqual((root/'apps.json').read_bytes(),before)
 
     def test_owner_endpoint_never_enters_registry(self):
