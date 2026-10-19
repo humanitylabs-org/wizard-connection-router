@@ -9,7 +9,7 @@
   "categories": ["network"],
   "description": "Credential-free model and service routing with explicit owner choices. Requires the installed registry and scoped grants from App Manager. The page is informational; owner approval UI and automatic route projection remain integration work.",
   "tipi_version": 2,
-  "version": "0.1.2",
+  "version": "0.1.3",
   "source": "https://github.com/humanitylabs-org/wizard-connection-router",
   "exposable": false,
   "supported_architectures": ["amd64", "arm64"],

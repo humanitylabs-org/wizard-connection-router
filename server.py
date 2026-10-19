@@ -19,7 +19,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
-VERSION = "0.1.2"
+VERSION = "0.1.3"
 APP_ID = "wizard-connection-router"
 TIERS = ("fast", "standard", "frontier")
 CODES = {"signed_out", "expired", "limit", "unreachable", "provider_error", "needs_owner", "blocked"}
@@ -195,9 +195,13 @@ class Router:
                                 if len(source) > 262144 or not source.startswith("---\n"):
                                     raise ValueError()
                                 manifest = yaml.safe_load(source.split("---", 2)[1])
-                                if manifest.get("id") != app_id or str(manifest.get("version")) != app.get("version"):
-                                    raise ValueError()
-                                app["requires"] = manifest.get("requires", {})
+                                # Legacy agent/service manifests can omit version and
+                                # have no declarations. Do not let those unrelated apps
+                                # block every feature; fence any actual declaration.
+                                if "requires" in manifest:
+                                    if manifest.get("id") != app_id or str(manifest.get("version")) != app.get("version"):
+                                        raise ValueError()
+                                    app["requires"] = manifest["requires"]
                         except FileNotFoundError:
                             pass
                 # Owner deployment addresses belong in server-side config, not source
