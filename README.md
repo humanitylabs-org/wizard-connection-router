@@ -2,8 +2,10 @@
 
 A small Python-standard-library service for Wizard OS decision #65. Discovers
 installed app requirements, saves explicit owner choices, and forwards isolated
-inference to connection apps. **Slice 1: source + fake-provider tests only.** No
-real provider calls, deployment, published image, or changes to Hermes.
+inference to connection apps. Engine images are released through the GitHub-hosted
+`humanitylabs-org/wizard-app-store` workflows. This does not modify Hermes or install
+provider plugins; the shell approval UI and automatic registry projection remain
+separate integration work.
 
 ## Try it
 
@@ -177,18 +179,21 @@ This slice makes the following explicit, locally tested choices:
 
 `wizard.md`, `runtipi/`, `Dockerfile`, the integrated `mcp/` front and `SKILL.md`
 follow the stdlib provider-app pattern. The static view is informational, not a
-finished shell settings UI. The Dockerfile is supplied but **not built**; the
-compose image is a packaging placeholder, not a published artifact. App Manager
-must supply read-only registry/grants snapshots under the app's own data directory.
+finished shell settings UI. The recipe pins the published multi-architecture image
+by index digest, exposes only a loopback host port, and mounts App Manager's
+credential-free shared registry read-only. Supply scoped grants in the app's
+`wizard/grants.json` directory and a UID 1000-writable `data/` directory before
+use. An initial closed grants file is `{"enforce":true,"incoming":[],"outgoing":{}}`;
+missing grants fail closed. Do not relax enforcement to bypass integration.
 No privileged mounts, runtime sockets or provider login volumes are requested.
 
 Tests cover four-box discovery, exact pin/abilities/privacy, approval persistence,
 run-only/concurrent consumption, grants/revocation, runtime failures/no failover,
 unknown effective models, live SSE flushing, malformed registries/streams, owner
 header refusal, service forwarding/bypass refusal, MCP, atomic failure and the
-registry projection helper. Docker, real-provider integration, shell authentication,
-App Manager projection wiring and independent security review remain promotion
-gates, not claims made by these fixtures.
+registry projection helper. Hosted CI also builds and smoke-tests the image before
+publication. These fixtures do not claim signed-in owner inference, shell approval
+UI, App Manager route-projection wiring, or independent security review.
 
 Spec baseline: `wizard-os` main `73e6a76e7e2ace775c3c9204376c2285efe55d8f`
 (CONNECTION_ROUTER, AI_CONNECTIONS, APP_WORKFLOWS, WIZARD_MD, APPS_JSON);

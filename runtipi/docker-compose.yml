@@ -1,8 +1,10 @@
-# Packaging sketch only: image is not built or published in slice 1.
-# App Manager must populate wizard/apps.json and wizard/grants.json snapshots.
+# Immutable release; App Manager shares its credential-free installed registry.
+x-runtipi:
+  schema_version: 2
+  overrides: []
 services:
   wizard-connection-router:
-    image: ghcr.io/humanitylabs-org/wizard-connection-router:0.1.0
+    image: ghcr.io/humanitylabs-org/wizard-connection-router:0.1.0@sha256:219a8fc1a520a1ecca7942923bd7cf5dda686d83f0a91a451b1ef85c5b56e385
     user: "1000:1000"
     read_only: true
     cap_drop: [ALL]
@@ -11,12 +13,23 @@ services:
     mem_limit: 128m
     environment:
       WIZARD_APPS_JSON: /run/wizard/apps.json
-      WIZARD_GRANTS_FILE: /run/wizard/grants.json
+      WIZARD_GRANTS_FILE: /run/grants/grants.json
       WIZARD_ROUTER_DATA_DIR: /data
       WIZARD_ROUTER_PORT: "8802"
     volumes:
       - ${APP_DATA_DIR}/data:/data
-      - ${APP_DATA_DIR}/wizard:/run/wizard:ro
+      - ${ROOT_FOLDER_HOST}/app-data/wizard-os:/run/wizard:ro
+      - ${APP_DATA_DIR}/wizard:/run/grants:ro
+    ports:
+      - "127.0.0.1:${APP_PORT}:8802"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8802/health', timeout=4)"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     x-runtipi:
       is_main: true
       internal_port: 8802
+      add_to_main_network: true
