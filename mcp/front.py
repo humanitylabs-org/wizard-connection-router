@@ -8,7 +8,7 @@ def rpc(message, needs):
     result = None
     if method == "initialize":
         result = {"protocolVersion": "2025-03-26", "capabilities": {"tools": {}},
-                  "serverInfo": {"name": "wizard-connection-router", "version": "0.1.3"}}
+                  "serverInfo": {"name": "wizard-connection-router", "version": "0.1.4"}}
     elif method == "notifications/initialized":
         result = {}
     elif method == "ping":

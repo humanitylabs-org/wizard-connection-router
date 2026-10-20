@@ -19,7 +19,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
-VERSION = "0.1.3"
+VERSION = "0.1.4"
 APP_ID = "wizard-connection-router"
 TIERS = ("fast", "standard", "frontier")
 CODES = {"signed_out", "expired", "limit", "unreachable", "provider_error", "needs_owner", "blocked"}
@@ -359,6 +359,21 @@ class Router:
                     "models": [self.model_need(app, f, n, providers) for f, n in req.get("models", {}).items()],
                     "services": [self.service_need(app, n, data, apps) for n in req.get("services", [])]}
 
+    def provider_summary(self, providers):
+        # Names, states and model lists only: enough for the owner sheet to say "Connect X".
+        return [{"id": pid, "name": str(p["app"].get("name") or pid)[:80], "status": p["status"],
+                 "error": p["error"] if p["status"] != "connected" else None, "fix_url": fix_for(p["app"]),
+                 "models": [{"id": m["id"], "label": m["label"], "tier": m["tier"]} for m in p["models"]]}
+                for pid, p in sorted(providers.items())]
+
+    def owner_needs(self, app):
+        """The shell's view of an installed app's needs: same rules as /v1/needs, plus providers."""
+        with self.lock:
+            result = self.needs(app)
+            _, apps = self.registry()
+            result["providers"] = self.provider_summary(self.providers(apps))
+            return result
+
     def approve(self, body):
         app, feature, provider, model = (body.get(k) for k in ("app", "feature", "provider", "model"))
         scope = body.get("scope", "run")
@@ -551,6 +566,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(200, self.router.approve(self.json_body()))
             if path == "/v1/owner/provider-order" and self.command == "POST":
                 return self.send_json(200, self.router.order(self.json_body()))
+            match = re.fullmatch(r"/v1/owner/needs/([a-z0-9][a-z0-9-]{0,63})", path)
+            if match and self.command == "GET":
+                return self.send_json(200, self.router.owner_needs(match.group(1)))
         app = self.router.caller(self.headers)
         if path == "/v1/needs" and self.command == "GET":
             return self.send_json(200, self.router.needs(app))

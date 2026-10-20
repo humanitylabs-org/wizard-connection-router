@@ -93,6 +93,7 @@ which would bypass model approval. Generic service grants are not path-scoped.
 ## Owner API (trusted shell backend only)
 
 - `GET /v1/owner/routes`: saved routes, pinned services and provider order.
+- `GET /v1/owner/needs/<app>`: the same answer as `/v1/needs` for one installed app, plus connected providers and their model lists, for the Store install sheet and per-app "Models and connections".
 - `POST /v1/owner/approve`: `{app, feature, provider, model, scope}`.
   - `scope: install` saves one route; repeated runs reuse it.
   - `scope: run` (default) returns an `override` capability, valid for 300 seconds.
