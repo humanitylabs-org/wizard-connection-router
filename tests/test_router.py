@@ -420,5 +420,22 @@ class RouterTests(unittest.TestCase):
             Router(self.apps_file, self.root / "data", self.grants_file)
 
 
+    def test_owner_needs_for_installed_app_and_route_after_approval(self):
+        self.write_apps([self.chatgpt.app()])
+        status, data = self.request("/v1/owner/needs/reader", owner=True)
+        self.assertEqual(status, 200, data)
+        self.assertEqual(data["models"][0]["status"], "needs_owner")
+        self.assertEqual(data["models"][0]["offered"]["provider"], "chatgpt")
+        self.assertEqual([p["id"] for p in data["providers"]], ["chatgpt"])
+        self.assertEqual(data["providers"][0]["models"][0]["id"], "gpt-standard")
+        self.approve("chatgpt", "gpt-standard")
+        data = self.request("/v1/owner/needs/reader", owner=True)[1]
+        self.assertEqual((data["models"][0]["status"], data["models"][0]["route"]["chosen"]), ("ready", "owner-swap"))
+        self.assertEqual(self.request("/v1/owner/needs/missing", owner=True)[0], 403)
+        self.assertEqual(self.request("/v1/owner/needs/reader", owner=True, headers={"Origin": "https://x"})[0], 403)
+        self.assertEqual(self.request("/v1/owner/needs/reader", owner=True, headers={"X-Forwarded-For": "1.2.3.4"})[0], 403)
+        self.assertNotIn("grant", json.dumps(data).lower())
+
+
 if __name__ == "__main__":
     unittest.main()
