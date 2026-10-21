@@ -200,3 +200,18 @@ Spec baseline: `wizard-os` main `73e6a76e7e2ace775c3c9204376c2285efe55d8f`
 (CONNECTION_ROUTER, AI_CONNECTIONS, APP_WORKFLOWS, WIZARD_MD, APPS_JSON);
 grants draft `468dc5ecf1cce312f2de11ba19edf1ee389b4c09`.
 Template: ChatGPT connection `f87d5ddc449535418ee92ebeb24aaec36cc58058`.
+
+## Runtime packaging
+
+`runtime.package: source` runs the read-only pinned repository in the official
+Python 3.12 Alpine multi-architecture image; no custom image or install step is
+needed. `PYTHONPATH=/app/vendor` selects the unmodified pure-Python PyYAML 6.0.3
+package. Its MIT license and source/file hashes are in `vendor/`. The optional
+native YAML extension is deliberately not included.
+
+The compose keeps its existing sandbox, environment, health check and registry
+mounts. It runs as root with all capabilities dropped because a clean App Manager
+`/data` bind mount is root-owned; source and registry mounts stay read-only. The
+Dockerfile remains a developer-only alternative, not the installation recipe.
+Run the existing tests with `PYTHONPATH=vendor python3 -m unittest discover -s tests -v`.
+Requires an App Manager release containing wizard-app-manager#153 (`APP_SOURCE_DIR`).

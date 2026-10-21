@@ -9,6 +9,7 @@ summary: Connect installed apps to their tested models and services, with explic
 license: MIT
 source: https://github.com/humanitylabs-org/wizard-connection-router
 runtime:
+  package: source
   kind: runtipi
   config: runtipi/config.json
   compose: runtipi/docker-compose.yml
