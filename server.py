@@ -354,7 +354,7 @@ class Router:
                                    "warning": "Results may differ from what the developer tested."}
         return info
 
-    def service_need(self, app, need, data, apps):
+    def service_need(self, app, need, data, apps, providers=None):
         key, slot = app + "/" + need["slot"], need["slot"]
         chosen = self.state["services"].get(key)
         if chosen is None:
@@ -370,10 +370,14 @@ class Router:
         target = apps.get(chosen, {})
         ready = target.get("status") == "running" and slot in target.get("provides", [])
         private_blocked = need.get("private_data", False) and target and target.get("private") is not True
+        # A provider that is also an AI connection serves nothing until the owner has signed it in.
+        signed_out = ready and chosen in (providers or {}) and providers[chosen].get("status") != "connected"
         info = {**need, "required": not need.get("optional", False), "purpose": need.get("purpose"),
                 "private_data": need.get("private_data", False), "recommend": need.get("recommend"),
-                "provider": chosen, "status": "ready" if ready and not private_blocked else "blocked",
+                "provider": chosen, "status": "needs_owner" if signed_out and not private_blocked else ("ready" if ready and not private_blocked else "blocked"),
                 "fix_url": fix_for(target) if target else FIX}
+        if signed_out and not private_blocked:
+            info["error"] = Fault("needs_owner", "Connect this provider to use the service.", info["fix_url"]).payload()
         if private_blocked:
             info["error"] = Fault("blocked", "This service requires a provider marked private: true.", info["fix_url"]).payload()
         return info
@@ -382,7 +386,7 @@ class Router:
         with self.lock:
             data, apps, req, providers = self.context(app)
             models = [self.model_need(app, f, n, providers) for f, n in req.get("models", {}).items()]
-            services = [self.service_need(app, n, data, apps) for n in req.get("services", [])]
+            services = [self.service_need(app, n, data, apps, providers) for n in req.get("services", [])]
             return {"app": app, "agent_binding": apps[app].get("agent_binding"),
                     "models": models, "services": services,
                     "ready_to_open": all(n["status"] == "ready" for n in models + services if n["required"])}

@@ -78,7 +78,7 @@ class EchoHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         state = self.server.state
         if self.path == "/api/connection":
-            data = json.dumps({"contract": "wizard.ai-connection/2", "status": "connected", "models": []}).encode()
+            data = json.dumps({"contract": "wizard.ai-connection/2", "status": state.get("connection", "connected"), "models": []}).encode()
             self.send_response(200)
             self.send_header("Content-Length", str(len(data)))
             self.end_headers()
@@ -348,6 +348,19 @@ class ServiceTests(unittest.TestCase):
                                ("/v1/services/live-transcription/%2e%2e/api/infer", 400)):
             self.assertEqual(self.connect(path=path)[2], expected)
         self.assertEqual(self.state["requests"], [])
+
+    def test_signed_out_mixed_provider_needs_owner_until_connected(self):
+        self.target["provides"].append("ai-connection")
+        self.write_apps()
+        self.state["connection"] = "not_connected"
+        status, result = self.request("/v1/owner/needs/reader", True)
+        self.assertEqual(status, 200)
+        self.assertEqual(result["services"][0]["status"], "needs_owner")
+        self.assertFalse(result["ready_to_open"])
+        self.state["connection"] = "connected"
+        status, result = self.request("/v1/owner/needs/reader", True)
+        self.assertEqual(result["services"][0]["status"], "ready")
+        self.assertTrue(result["ready_to_open"])
 
     def test_mixed_provider_only_allows_live_contract_not_inference(self):
         self.target["provides"].append("ai-connection")
