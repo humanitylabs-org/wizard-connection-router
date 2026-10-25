@@ -1,0 +1,9 @@
+name: Reuse check
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+permissions:
+  contents: read
+jobs:
+  reuse:
+    uses: humanitylabs-org/wizard-ux/.github/workflows/reuse-check-app.yml@main
