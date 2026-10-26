@@ -1,18 +1,23 @@
 """Credential-free connection router. Python stdlib; no agent runtime imports."""
 from __future__ import annotations
 
+import base64
 import copy
 import hashlib
 import hmac
+import io
 import json
 import logging
 import os
 import re
 import secrets
+import socket
+import ssl
 import tempfile
 import threading
 import time
 import yaml
+from http.client import parse_headers, HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -26,6 +31,12 @@ CODES = {"signed_out", "expired", "limit", "unreachable", "provider_error", "nee
 FIX = "/wizard-os-home/?open=wizard-connection-router"
 ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 MAX_BODY = 1024 * 1024
+WS_IDLE_TIMEOUT = 120
+WS_MAX_SESSION = 4 * 60 * 60
+WS_HEADERS = ("Sec-WebSocket-Key", "Sec-WebSocket-Version", "Sec-WebSocket-Protocol",
+              "Sec-WebSocket-Extensions", "Upgrade", "Connection")
+WS_RESPONSE_HEADERS = ("Upgrade", "Connection", "Sec-WebSocket-Accept",
+                       "Sec-WebSocket-Protocol", "Sec-WebSocket-Extensions")
 LOG = logging.getLogger("router")
 
 
@@ -101,7 +112,7 @@ def fix_for(app):
 
 
 class Router:
-    def __init__(self, apps_file, data_dir, grants_file=None, timeout=10):
+    def __init__(self, apps_file, data_dir, grants_file=None, timeout: float = 10):
         self.apps_file = Path(apps_file)
         self.state_file = Path(data_dir) / "routes.json"
         self.grants_file = Path(grants_file) if grants_file else None
@@ -219,6 +230,13 @@ class Router:
                 for need in req.get("services", []):
                     if not isinstance(need, dict) or not identifier(need.get("slot")):
                         raise ValueError()
+                for need in [*req.get("models", {}).values(), *req.get("services", [])]:
+                    purpose = need.get("purpose")
+                    if (type(need.get("optional", False)) is not bool or
+                            type(need.get("private_data", False)) is not bool or
+                            (purpose is not None and (not isinstance(purpose, str) or
+                             len(purpose) > 80 or any(c in purpose for c in "\r\n")))):
+                        raise ValueError()
                 apps[app["id"]] = app
             return data, apps
         except (OSError, ValueError, TypeError, AttributeError, yaml.YAMLError):
@@ -317,7 +335,8 @@ class Router:
                 route = self.record(app, feature, need, match[0], match[1]["id"], "match")
                 self.state["routes"][key] = route
                 self.save()
-        info = {"feature": feature, **need, "route": route, "fix_url": FIX}
+        info = {"feature": feature, **need, "required": not need.get("optional", False),
+                "purpose": need.get("purpose"), "route": route, "fix_url": FIX}
         if route:
             try:
                 _, model = self.check_route(route, need, providers)
@@ -335,7 +354,7 @@ class Router:
                                    "warning": "Results may differ from what the developer tested."}
         return info
 
-    def service_need(self, app, need, data, apps):
+    def service_need(self, app, need, data, apps, providers=None):
         key, slot = app + "/" + need["slot"], need["slot"]
         chosen = self.state["services"].get(key)
         if chosen is None:
@@ -350,14 +369,27 @@ class Router:
                 chosen = None
         target = apps.get(chosen, {})
         ready = target.get("status") == "running" and slot in target.get("provides", [])
-        return {**need, "provider": chosen, "status": "ready" if ready else "blocked", "fix_url": fix_for(target) if target else FIX}
+        private_blocked = need.get("private_data", False) and target and target.get("private") is not True
+        # A provider that is also an AI connection serves nothing until the owner has signed it in.
+        signed_out = ready and chosen in (providers or {}) and providers[chosen].get("status") != "connected"
+        info = {**need, "required": not need.get("optional", False), "purpose": need.get("purpose"),
+                "private_data": need.get("private_data", False), "recommend": need.get("recommend"),
+                "provider": chosen, "status": "needs_owner" if signed_out and not private_blocked else ("ready" if ready and not private_blocked else "blocked"),
+                "fix_url": fix_for(target) if target else FIX}
+        if signed_out and not private_blocked:
+            info["error"] = Fault("needs_owner", "Connect this provider to use the service.", info["fix_url"]).payload()
+        if private_blocked:
+            info["error"] = Fault("blocked", "This service requires a provider marked private: true.", info["fix_url"]).payload()
+        return info
 
     def needs(self, app):
         with self.lock:
             data, apps, req, providers = self.context(app)
+            models = [self.model_need(app, f, n, providers) for f, n in req.get("models", {}).items()]
+            services = [self.service_need(app, n, data, apps, providers) for n in req.get("services", [])]
             return {"app": app, "agent_binding": apps[app].get("agent_binding"),
-                    "models": [self.model_need(app, f, n, providers) for f, n in req.get("models", {}).items()],
-                    "services": [self.service_need(app, n, data, apps) for n in req.get("services", [])]}
+                    "models": models, "services": services,
+                    "ready_to_open": all(n["status"] == "ready" for n in models + services if n["required"])}
 
     def provider_summary(self, providers):
         # Names, states and model lists only: enough for the owner sheet to say "Connect X".
@@ -457,9 +489,12 @@ class Router:
                 raise Fault("blocked", "Service not declared by caller.", status=403)
             info = self.service_need(app, need, data, apps)
             if info["status"] != "ready":
-                raise Fault("blocked", "Service is not connected.", info["fix_url"])
+                message = info.get("error", {}).get("message", "Service is not connected.")
+                raise Fault("blocked", message, info["fix_url"])
             target = apps[info["provider"]]
-            if slot in ("ai-connection", "connection-router") or "ai-connection" in target.get("provides", []):
+            # Mixed providers (e.g. Tinfoil) may expose only this non-inference contract.
+            live = slot == "live-transcription" and path.split("?", 1)[0] == "v1/live"
+            if slot in ("ai-connection", "connection-router") or ("ai-connection" in target.get("provides", []) and not live):
                 raise Fault("blocked", "Inference providers must use the model route, not the service proxy.", status=403)
             return endpoint(target) + "/" + path, self.outgoing(target["id"], slot), fix_for(target)
 
@@ -586,7 +621,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.infer(*prepared)
         match = re.match(r"/v1/services/([a-z0-9-]+)/(.*)", self.path)
         if match:
-            return self.proxy(*self.router.service(app, match[1], match[2]))
+            prepared = self.router.service(app, match[1], match[2])
+            if self.headers.get("Upgrade", "").lower() == "websocket":
+                return self.websocket(*prepared)
+            return self.proxy(*prepared)
         raise Fault("blocked", "Unknown route or method.", status=404)
 
     def sse(self, obj):
@@ -630,6 +668,127 @@ class Handler(BaseHTTPRequestHandler):
             self.sse(Fault("unreachable", "Provider connection failed.", fix).payload())
         except (ValueError, TypeError, UnicodeError):
             self.sse(Fault("provider_error", "Malformed provider stream.", fix).payload())
+
+    def websocket(self, url, headers, fix):
+        """Upgrade only after normal service admission; tunnel opaque, unlogged bytes."""
+        if (self.command != "GET" or self.headers.get("Transfer-Encoding") or
+                self.headers.get("Content-Length", "0") != "0" or
+                "upgrade" not in [v.strip().lower() for v in self.headers.get("Connection", "").split(",")]):
+            raise Fault("blocked", "Expected a body-free WebSocket GET upgrade.", fix, 400)
+        key = self.headers.get("Sec-WebSocket-Key", "")
+        try:
+            if len(base64.b64decode(key, validate=True)) != 16 or self.headers.get("Sec-WebSocket-Version") != "13":
+                raise ValueError()
+        except ValueError:
+            raise Fault("blocked", "Invalid WebSocket key or version.", fix, 400) from None
+        for name in WS_HEADERS:
+            if self.headers.get(name) is not None:
+                headers[name] = self.headers[name]
+        parsed = urlsplit(url)
+        headers["Host"] = parsed.netloc
+        if any("\r" in v or "\n" in v for v in headers.values()):
+            raise Fault("blocked", "Invalid WebSocket headers.", fix, 400)
+        path = parsed.path + ("?" + parsed.query if parsed.query else "")
+        try:
+            request = (f"GET {path} HTTP/1.1\r\n" +
+                       "".join(f"{k}: {v}\r\n" for k, v in headers.items()) + "\r\n").encode("latin-1")
+        except UnicodeError:
+            raise Fault("blocked", "Invalid WebSocket request encoding.", fix, 400) from None
+        upstream = None
+        try:
+            upstream = socket.create_connection((parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80)), self.router.timeout)
+            if parsed.scheme == "https":
+                upstream = ssl.create_default_context().wrap_socket(upstream, server_hostname=parsed.hostname)
+            upstream.sendall(request)
+            raw = bytearray()
+            deadline = time.monotonic() + self.router.timeout
+            while b"\r\n\r\n" not in raw:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError()
+                upstream.settimeout(remaining)
+                chunk = upstream.recv(4096)
+                if not chunk:
+                    raise Fault("provider_error", "Service ended its WebSocket handshake.", fix, 502)
+                raw.extend(chunk)
+                if len(raw.split(b"\r\n\r\n", 1)[0]) > 65536:
+                    raise Fault("provider_error", "Service WebSocket headers are too large.", fix, 502)
+            head, pending = bytes(raw).split(b"\r\n\r\n", 1)
+            status_line, fields = head.split(b"\r\n", 1)
+            parts = status_line.split(b" ", 2)
+            if len(parts) < 2 or parts[0] not in (b"HTTP/1.0", b"HTTP/1.1"):
+                raise ValueError()
+            status = int(parts[1])
+            response = parse_headers(io.BytesIO(fields + b"\r\n\r\n"))
+            if status != 101:
+                code = {401: "signed_out", 403: "expired", 429: "limit"}.get(status, "provider_error")
+                raise Fault(code, "Service rejected WebSocket upgrade.", fix, 502)
+            expected = base64.b64encode(hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
+            if (response.get("Upgrade", "").lower() != "websocket" or
+                    "upgrade" not in [v.strip().lower() for v in response.get("Connection", "").split(",")] or
+                    response.get("Sec-WebSocket-Accept") != expected):
+                raise ValueError()
+            values = [(k, response[k]) for k in WS_RESPONSE_HEADERS if response.get(k) is not None]
+            if any("\r" in v or "\n" in v for _, v in values):
+                raise ValueError()
+            self.close_connection = True
+            self.response_started = True
+            self.wfile.write(b"HTTP/1.1 101 Switching Protocols\r\n" +
+                             "".join(f"{k}: {v}\r\n" for k, v in values).encode("latin-1") + b"\r\n")
+            self.wfile.flush()
+            upstream.settimeout(None)
+            self.connection.settimeout(None)
+            self.tunnel(upstream, pending)
+        except (OSError, URLError):
+            raise Fault("unreachable", "Service WebSocket connection failed.", fix, 502) from None
+        except (ValueError, HTTPException):
+            raise Fault("provider_error", "Malformed service WebSocket handshake.", fix, 502) from None
+        finally:
+            if upstream is not None:
+                upstream.close()
+
+    def tunnel(self, upstream, pending=b""):
+        stopped, lock = threading.Event(), threading.Lock()
+        started = time.monotonic()
+        activity = [started]
+
+        def pipe(receive, destination, initial=b""):
+            try:
+                if initial:
+                    destination.sendall(initial)  # First frame may be coalesced with 101.
+                while not stopped.is_set():
+                    chunk = receive(65536)
+                    if not chunk:
+                        break
+                    with lock:
+                        activity[0] = time.monotonic()
+                    destination.sendall(chunk)
+            except OSError:
+                pass
+            finally:
+                stopped.set()
+
+        pumps = [threading.Thread(target=pipe, args=pair, daemon=True) for pair in
+                 # read1 drains prefetched client frames before reading the raw socket.
+                 ((self.rfile.read1, upstream, b""), (upstream.recv, self.connection, pending))]
+        for pump in pumps:
+            pump.start()
+        try:
+            while not stopped.is_set():
+                with lock:
+                    remaining = min(started + WS_MAX_SESSION, activity[0] + WS_IDLE_TIMEOUT) - time.monotonic()
+                if remaining <= 0:
+                    break
+                stopped.wait(min(remaining, 1))
+        finally:
+            stopped.set()
+            for connection in (self.connection, upstream):
+                try:
+                    connection.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+            for pump in pumps:
+                pump.join()
 
     def proxy(self, url, headers, fix):
         body = self.body()

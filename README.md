@@ -1,6 +1,6 @@
 # Wizard Connection Router
 
-A small Python-standard-library service for Wizard OS decision #65. Discovers
+A small Python service for Wizard OS decision #65. Discovers
 installed app requirements, saves explicit owner choices, and forwards isolated
 inference to connection apps. Engine images are released through the GitHub-hosted
 `humanitylabs-org/wizard-app-store` workflows. This does not modify Hermes or install
@@ -9,7 +9,9 @@ separate integration work.
 
 ## Try it
 
-Python 3.12+; no dependencies or installation required:
+Python 3.12+ with the existing PyYAML manifest reader available (the image pins
+PyYAML 6.0.3). Routing, WebSocket transport and tests use only the standard library;
+this change adds no dependencies:
 
 ```sh
 python3 -m unittest discover -s tests -v
@@ -65,9 +67,9 @@ file fails closed. Omitting `WIZARD_GRANTS_FILE` means report-only development m
 
 | Endpoint | Result |
 |---|---|
-| `GET /v1/needs` | Calling app's `models`, `services`, and unchanged `agent_binding`; each need has ready / needs_owner / blocked and `fix_url`. |
+| `GET /v1/needs` | Calling app's `models`, `services`, unchanged `agent_binding`, and `ready_to_open`; each need has ready / needs_owner / blocked and `fix_url`. |
 | `POST /v1/models/<feature>/run` | Body: `system`, `messages`, `max_tokens`, `stream`, `abilities`. Provider/model are router-owned; unknown fields are rejected. SSE is always used in this slice. |
-| `ANY /v1/services/<slot>/<path>` | Standard HTTP methods, path/query/body forwarded to the selected slot app. Does not forward caller grants, authorization or cookies. Uses the router's outgoing grant. |
+| `ANY /v1/services/<slot>/<path>` | Standard HTTP methods, path/query/body forwarded to the selected slot app. GET WebSocket upgrades use the same service admission and pin. Does not forward caller grants, authorization or cookies. Uses the router's outgoing grant. |
 | `POST /mcp` | Stateless streamable-HTTP MCP with the read-only `connection_needs` tool; no approval or inference tool. |
 
 Provider discovery calls `GET /api/connection` on each running `ai-connection` app.
@@ -87,8 +89,10 @@ arrives**. This is provider-reported provenance, not cryptographic attestation.
 Errors are JSON before streaming starts, SSE `error` afterwards. Every router
 error includes `fix_url`; codes are `signed_out`, `expired`, `limit`, `unreachable`,
 `provider_error`, `needs_owner`, `blocked`. Service HTTP responses retain their own
-status/body. Inference providers cannot be accessed through the service proxy,
-which would bypass model approval. Generic service grants are not path-scoped.
+status/body. Inference routes cannot be accessed through the service proxy,
+which would bypass model approval. A mixed inference/transcription provider is
+accessible only at slot `live-transcription`, exact path `v1/live` (optional query);
+its other paths remain blocked. Generic service grants are otherwise not path-scoped.
 
 ## Owner API (trusted shell backend only)
 
@@ -140,9 +144,69 @@ than erasing approvals. Use one router process per data directory. Back up this
 file with whole-box data. There are no provider credentials or prompts in state.
 
 Services select the installed registry's `slots[slot].default`, then pin that
-selection. They never select an arbitrary candidate or auto-failover. Optional
-needs remain visible as blocked without disabling other features. `recommend`
-and `purpose` are returned for a later install sheet; this service installs nothing.
+selection. They never select an arbitrary candidate or auto-failover. Models and
+services are required unless they declare `optional: true`. Both needs endpoints
+return `required: bool` and `purpose: str|null` on every model/service; purpose is
+an optional single owner-facing line of at most 80 characters. Services additionally
+return `private_data: bool` (default false), `recommend: str|null`, and `fix_url`.
+A private-data service is blocked with a clear error unless the selected provider's
+installed registry entry has exactly `private: true`. This is rechecked on HTTP
+and WebSocket admission, including pinned routes; optional never bypasses privacy.
+
+`ready_to_open` is true exactly when all required models and services are ready.
+Optional blocked entries remain visible but do not prevent opening; an app with no
+needs is ready. The unchanged `agent_binding` is not part of this calculation.
+Recommendations do not select providers or install apps; the shell owns setup.
+
+## WebSocket services and live transcription
+
+Send `GET /v1/services/<slot>/<path>` with the normal app `X-Wizard-Grant` and a
+WebSocket upgrade. The router reuses HTTP-service caller authentication, declared
+service checks, pinned provider selection, privacy and outgoing grants. It connects
+directly to the provider API origin (verified TLS for HTTPS), with no redirects or
+environment proxies. Only `Sec-WebSocket-Key`, `Sec-WebSocket-Version`,
+`Sec-WebSocket-Protocol`, `Sec-WebSocket-Extensions`, `Upgrade`, and `Connection`
+may pass from caller headers. `Host` is generated and `X-Wizard-Grant` is the router's
+outgoing capability; caller Origin, Cookie, Authorization, identity and forwarding
+headers are dropped. Provider 101 negotiation headers are relayed, not cookies.
+Non-101 upgrades yield normal Fault JSON (502 with signed_out / expired / limit /
+provider_error as appropriate); provider bodies and redirects are never relayed.
+
+After 101, two threads relay opaque bytes until either side closes. An independent
+watchdog shuts down both sockets after 120 idle seconds (no bytes in either
+direction) or four hours overall, including when a writer is blocked. The threaded
+HTTP server remains available to other requests. Audio/text bytes are never logged.
+Provider and client frames already buffered with either handshake are preserved.
+
+`wizard.live-transcription/1` providers declare `provides: [live-transcription]`
+and expose WebSocket `GET /v1/live`, restricted to the Router's outgoing grant.
+Consumers declare, for example:
+
+```yaml
+requires:
+  services:
+    - slot: live-transcription
+      recommend: wizard-tinfoil
+      private_data: true
+      purpose: Words appear as you speak
+```
+
+Connect only through `ws(s)://<router>/v1/services/live-transcription/v1/live`.
+The provider contract is:
+
+- First client text frame:
+  `{"type":"start","format":"pcm_s16le","sample_rate":16000,"channels":1,"language":null}`.
+- Client binary frames: raw PCM, each at most 64 KiB. Text `{"type":"commit"}`
+  finalises the utterance; `{"type":"stop"}` finalises pending audio and closes.
+- Provider text frames: `{"type":"ready","provider":"<app id>","model":"<model id>"}`,
+  `{"type":"delta","text":"..."}`, `{"type":"final","text":"..."}` (one per commit
+  with audio), `{"type":"closed"}` then a normal close.
+- Failures: `{"type":"error","code":"signed_out|limit|unreachable|unsupported_format|provider_error","message":"..."}`.
+  Unsupported format sends `unsupported_format` then closes.
+- Audio before ready must be buffered by the provider, not dropped. Providers never
+  log audio or text. The router does not parse frames or enforce these message/frame
+  semantics; those belong to providers and consumers. Batch transcription continues
+  through the box's shared `TRANSCRIPTION_URL`, not this need.
 
 ## Proposed fields / integration decisions
 
@@ -172,9 +236,9 @@ This slice makes the following explicit, locally tested choices:
   slice-local proposed transport details. `stream: false` still yields SSE, since
   the router contract specifies a streamed response; there is no buffered JSON
   mode. Output is provisional until done rather than buffered until attestation.
-- **Services:** this slice pins existing slot defaults and supports standard HTTP
-  verbs; WebSocket upgrades, credential-bearing service authorization and service
-  reassignment UI are not implemented. No inference-through-service escape hatch.
+- **Services:** pins existing slot defaults and supports standard HTTP verbs and
+  WebSocket upgrades. Provider account authorization and service reassignment UI
+  remain outside this router. No inference-through-service escape hatch.
 
 ## Package and verification boundary
 
@@ -191,8 +255,13 @@ No privileged mounts, runtime sockets or provider login volumes are requested.
 Tests cover four-box discovery, exact pin/abilities/privacy, approval persistence,
 run-only/concurrent consumption, grants/revocation, runtime failures/no failover,
 unknown effective models, live SSE flushing, malformed registries/streams, owner
-header refusal, service forwarding/bypass refusal, MCP, atomic failure and the
-registry projection helper. Hosted CI also builds and smoke-tests the image before
+header refusal, service forwarding/bypass refusal, required/optional readiness,
+private-service admission, MCP, atomic failure and the registry projection helper.
+WebSocket tests hand-roll a handshake and masked frames against a loopback echo
+provider: both directions (including 64 KiB payloads), coalesced first frames,
+header isolation, outgoing app/slot grants, unauthenticated refusal, mixed-provider
+inference bypass refusal, handshake rejection/deadline, disconnects, idle timeout,
+maximum session and concurrent health requests. Hosted CI also builds and smoke-tests the image before
 publication. These fixtures do not claim signed-in owner inference, shell approval
 UI, App Manager route-projection wiring, or independent security review.
 
