@@ -19,7 +19,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
-VERSION = "0.1.4"
+VERSION = "0.1.5"
 APP_ID = "wizard-connection-router"
 TIERS = ("fast", "standard", "frontier")
 CODES = {"signed_out", "expired", "limit", "unreachable", "provider_error", "needs_owner", "blocked"}
@@ -138,13 +138,21 @@ class Router:
             if not isinstance(data, dict) or type(data.get("enforce")) is not bool or not isinstance(data.get("incoming"), list) or not isinstance(data.get("outgoing", {}), dict):
                 raise ValueError()
             for row in data["incoming"]:
-                if not isinstance(row, dict) or not identifier(row.get("from")) or not re.fullmatch(r"[0-9a-f]{64}", row.get("sha256", "")):
+                # spec/PERMISSIONS.md layer 2: the gateway's row is `host:agent-service` (outside the app-id namespace).
+                frm = row.get("from") if isinstance(row, dict) else None
+                host = isinstance(frm, str) and frm.startswith("host:") and identifier(frm[5:])
+                if not isinstance(row, dict) or not (identifier(frm) or host) or not re.fullmatch(r"[0-9a-f]{64}", row.get("sha256", "")):
                     raise ValueError()
             return data
         except (OSError, ValueError, TypeError):
             raise Fault("blocked", "Grants configuration is unavailable or invalid.", status=503) from None
 
-    def caller(self, headers):
+    def caller(self, headers, anonymous=False):
+        """The calling app id (or a `host:` row such as the Agent Service gateway's).
+
+        `anonymous=True` (MCP only): in report-only mode a caller that names no app gets None instead of a 400, so
+        data-free MCP methods (initialize, tools/list) work for the agent gateway, which sends no X-Wizard-App and,
+        until the App Manager writes its key, no grant. Enforcement is unchanged: an unknown grant is still 403."""
         grants = self.grants()
         digest = hashlib.sha256(headers.get("X-Wizard-Grant", "").encode()).hexdigest()
         for row in grants["incoming"]:
@@ -156,6 +164,8 @@ class Router:
         # Transitional identity hint only. Never honored when enforcement is enabled.
         app = headers.get("X-Wizard-App", "")
         if not identifier(app):
+            if anonymous and not app:
+                return None
             raise Fault("blocked", "Report-only callers must identify X-Wizard-App.", status=400)
         return app
 
@@ -543,6 +553,13 @@ class Handler(BaseHTTPRequestHandler):
         if any(k.lower() in refused or k.lower().startswith("cf-") for k in self.headers):
             raise Fault("blocked", "Owner API is box-only; call through the trusted shell backend.", status=403)
 
+    def app_needs(self, app):
+        # connection_needs answers for one calling APP. The agent gateway (a `host:` row, or an unnamed report-only
+        # caller) is not an app: it gets a tool error, never another app's needs and never the owner view.
+        if app is None or not identifier(app):
+            raise Fault("blocked", "connection_needs answers for a calling app; the agent gateway has no app needs.", status=403)
+        return self.router.needs(app)
+
     def dispatch(self):
         path = urlsplit(self.path).path
         if path == "/health" and self.command == "GET":
@@ -569,17 +586,18 @@ class Handler(BaseHTTPRequestHandler):
             match = re.fullmatch(r"/v1/owner/needs/([a-z0-9][a-z0-9-]{0,63})", path)
             if match and self.command == "GET":
                 return self.send_json(200, self.router.owner_needs(match.group(1)))
-        app = self.router.caller(self.headers)
-        if path == "/v1/needs" and self.command == "GET":
-            return self.send_json(200, self.router.needs(app))
         if path == "/mcp" and self.command == "POST":
             from mcp.front import rpc
+            app = self.router.caller(self.headers, anonymous=True)
             message = self.json_body()
             if "id" not in message:
                 self.send_response(202)
                 self.send_header("Content-Length", "0")
                 return self.end_headers()
-            return self.send_json(200, rpc(message, lambda: self.router.needs(app)))
+            return self.send_json(200, rpc(message, lambda: self.app_needs(app)))
+        app = self.router.caller(self.headers)
+        if path == "/v1/needs" and self.command == "GET":
+            return self.send_json(200, self.router.needs(app))
         match = re.fullmatch(r"/v1/models/([a-z0-9-]+)/run", path)
         if match and self.command == "POST":
             prepared = self.router.prepare_run(app, match[1], self.json_body(), self.headers.get("X-Wizard-Override"))
