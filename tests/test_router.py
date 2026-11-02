@@ -407,6 +407,48 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(self.request("/v1/needs")[1]["agent_binding"], self.app["agent_binding"])
         self.assertEqual(self.infer()[1][-1]["type"], "done")
 
+    def test_mcp_gateway_without_app_identity_lists_tools(self):
+        # wizard-os 389 O3: the Agent Service gateway sends neither X-Wizard-App nor (until the App Manager writes its
+        # key) a grant. Report-only mode answered its tools/list with 400, so the router vanished from the agent.
+        self.write_grants(False)
+        anon = {"X-Wizard-App": "", "X-Wizard-Grant": ""}
+        status, response = self.request("/mcp", {"jsonrpc": "2.0", "id": 1, "method": "initialize"}, headers=anon)
+        self.assertEqual(status, 200)
+        status, response = self.request("/mcp", {"jsonrpc": "2.0", "id": 2, "method": "tools/list"}, headers=anon)
+        self.assertEqual((status, [t["name"] for t in response["result"]["tools"]]), (200, ["connection_needs"]))
+        # An app's needs are never served to a caller that names no app.
+        status, response = self.request("/mcp", {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                                                 "params": {"name": "connection_needs"}}, headers=anon)
+        self.assertEqual(status, 200)
+        self.assertTrue(response["result"]["isError"])
+        self.assertEqual(json.loads(response["result"]["content"][0]["text"])["code"], "blocked")
+        self.assertNotIn("reader", json.dumps(response))
+        # Non-MCP app routes still require an identity in report-only mode.
+        self.assertEqual(self.request("/v1/needs", headers=anon)[0], 400)
+
+    def test_mcp_gateway_host_row_lists_tools_under_enforcement(self):
+        key = "gateway-fixture-key"
+        rows = [{"from": "host:agent-service", "sha256": hashlib.sha256(key.encode()).hexdigest()},
+                {"from": "reader", "sha256": hashlib.sha256(b"default-fixture").hexdigest()}]
+        for enforce in (False, True):
+            self.write_grants(enforce, rows)
+            # One valid host row must not poison existing app or owner reads in either mode.
+            self.assertEqual(self.request("/v1/needs")[0], 200)
+            self.assertEqual(self.request("/v1/owner/needs/reader", owner=True)[0], 200)
+        gw = {"X-Wizard-App": "", "X-Wizard-Grant": key}
+        status, response = self.request("/mcp", {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, headers=gw)
+        self.assertEqual((status, len((response.get("result") or {}).get("tools", []))), (200, 1), response)
+        status, response = self.request("/mcp", {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                                                 "params": {"name": "connection_needs"}}, headers=gw)
+        self.assertTrue(response["result"]["isError"])
+        # The gateway row is not an app: app routes refuse it, other rows keep working (the file is not rejected).
+        self.assertEqual(self.request("/v1/needs", headers=gw)[0], 403)
+        self.assertEqual(self.request("/v1/models/ask/run", {"messages": []}, headers=gw)[0], 403)
+        self.assertEqual(self.request("/v1/services/web-scraping/x", headers=gw)[0], 403)
+        # Enforcement unchanged: no grant (or a spoofed app name) is still refused before any MCP method.
+        self.assertEqual(self.request("/mcp", {"jsonrpc": "2.0", "id": 3, "method": "tools/list"},
+                                      headers={"X-Wizard-App": "reader", "X-Wizard-Grant": ""})[0], 403)
+
     def test_mcp_initialize_and_notifications(self):
         status, response = self.request("/mcp", {"jsonrpc": "2.0", "id": 1, "method": "initialize"})
         self.assertEqual(status, 200)
