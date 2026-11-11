@@ -4,7 +4,7 @@ id: wizard-connection-router
 name: Connection Router
 type: service
 category: system
-version: 0.1.5
+version: 0.1.6
 summary: Connect installed apps to their tested models and services, with explicit owner-approved replacements.
 license: MIT
 source: https://github.com/humanitylabs-org/wizard-connection-router
@@ -24,6 +24,9 @@ view:
 provides: [connection-router]
 uses: [ai-connection]
 health: /health
+switches:
+  contract: wizard.app-switches/1
+  path: /api/switches
 ---
 
 # Connection Router
