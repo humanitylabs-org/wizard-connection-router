@@ -4,7 +4,7 @@ id: wizard-connection-router
 name: Connection Router
 type: service
 category: system
-version: 0.1.6
+version: 0.1.7
 summary: Connect installed apps to their tested models and services, with explicit owner-approved replacements.
 license: MIT
 source: https://github.com/humanitylabs-org/wizard-connection-router
