@@ -19,7 +19,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
-VERSION = "0.1.6"
+VERSION = "0.1.7"
 APP_ID = "wizard-connection-router"
 TIERS = ("fast", "standard", "frontier")
 CODES = {"signed_out", "expired", "limit", "unreachable", "provider_error", "needs_owner", "blocked"}
@@ -713,12 +713,17 @@ def main():
 #   {'id': 'compact-header', 'name': 'Compact top bar', 'description': '...', 'default': False,
 #    'issues': ['humanitylabs-org/<repo>#20']}
 # and gate the feature on switch_on('compact-header'). State lives on the box (DATA_DIR/switches.json), so the app's
-# page, the Tracker (through the App Manager) and the agent see one state. GET/POST /api/switches, owner only: the
-# box's Tailscale Serve owner login with X-Wizard-Switch: 1; never a bearer, agent grant or box-local host.
+# page, the Tracker (through the App Manager) and the agent see one state. GET/POST /api/switches, owner only, with
+# X-Wizard-Switch: 1 and never a bearer or agent grant. An app with a platform owner-proof key (owner_proof in wizard.md,
+# wizard-os spec/OWNER_PROOF.md) accepts only a valid signed proof: any process on the box can set the other headers.
+# An app without one accepts the box's Tailscale Serve owner login, never a box-local host.
+import hashlib as _sw_hashlib
+import hmac as _sw_hmac
 import json as _sw_json
 import os as _sw_os
 import re as _sw_re
 import threading as _sw_threading
+import time as _sw_time
 from pathlib import Path as _SwPath
 from urllib.parse import urlsplit as _sw_urlsplit
 
@@ -727,6 +732,8 @@ _SW_CONTRACT = 'wizard.app-switches/1'
 _SW_ROUTE = _sw_re.compile(r'(?:/[a-z0-9][a-z0-9-]{0,62})?/api/switches/?')
 _SW_LOCAL = {'localhost', '127.0.0.1', '::1', '[::1]', '0.0.0.0'}
 _sw_lock = _sw_threading.Lock()
+_sw_nonces = {}
+_SW_PROOF = _sw_re.compile(r'(\d{1,12})\.([0-9a-f]{48})\.([0-9a-f]{64})')
 
 
 def _sw_file():
@@ -764,10 +771,41 @@ def _sw_set(switch_id, on):
     return switches_doc()
 
 
+def _sw_proof(h):
+    """None when this app has no platform owner-proof key, else whether the request carries a valid, unused proof."""
+    key_file = _sw_os.environ.get('WIZARD_OWNER_PROOF_KEY_FILE')
+    if not key_file:
+        return None
+    try:
+        with open(key_file, 'rb') as f:
+            key = f.read(33)
+    except OSError:
+        return False                    # a key is named but unreadable: refuse, never fall back to headers
+    app = _sw_os.environ.get('WIZARD_OWNER_PROOF_APP') or ''
+    values = h.headers.get_all('X-Wizard-App-Owner-Proof') or []
+    m = _SW_PROOF.fullmatch(values[0].strip()) if len(values) == 1 else None
+    if len(key) != 32 or not app or not m or abs(_sw_time.time() - int(m.group(1))) > 30:
+        return False
+    msg = '\n'.join(('wizard-app-owner-v1', app, m.group(1), m.group(2), h.command, h.path)).encode()
+    if not _sw_hmac.compare_digest(_sw_hmac.new(key, msg, _sw_hashlib.sha256).hexdigest(), m.group(3)):
+        return False
+    now = _sw_time.monotonic()
+    with _sw_lock:
+        for n in [n for n, until in _sw_nonces.items() if until < now]:
+            del _sw_nonces[n]
+        if m.group(2) in _sw_nonces:
+            return False
+        _sw_nonces[m.group(2)] = now + 60
+    return True
+
+
 def _sw_owner(h, write):
     hd = h.headers
     if hd.get('Authorization') or hd.get('X-Wizard-Switch') != '1':
         return False
+    proof = _sw_proof(h)
+    if proof is not None:
+        return proof
     if (hd.get('Sec-Fetch-Site') or 'same-origin').lower() not in ('same-origin', 'none'):
         return False
     host = (hd.get('Host') or '').strip().lower()
