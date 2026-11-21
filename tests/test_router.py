@@ -252,6 +252,35 @@ class RouterTests(unittest.TestCase):
                 self.assertEqual(result["code"], "blocked")
         self.assertEqual(self.request("/health", owner=True)[0], 200)
 
+    def test_one_broken_or_unreadable_app_never_blocks_another_apps_run(self):
+        # wizard-connection-router#14: an owner-only agent recipe and another app's bad
+        # declaration must not take AI away from a healthy app.
+        recipes = self.root / "repos"
+        private = recipes / "wizardapps/apps/agent-private"
+        private.mkdir(parents=True)
+        (private / ".wizard-commit").write_text("c" * 40)
+        (private / "wizard.md").write_text("---\nid: agent-private\n---\n")
+        bad = {"id": "bad", "requires": {"models": {"ask": {"tier": "unknown"}}}}
+        agent = {"id": "agent-private", "urn": "agent-private:wizardapps", "commit": "c" * 40, "type": "service"}
+        self.write_apps([self.claude.app()], extra=[bad, agent])
+        real = Path.read_text
+
+        def read_text(path, *a, **k):
+            if "agent-private" in str(path):
+                raise PermissionError(13, "Permission denied", str(path))
+            return real(path, *a, **k)
+        from unittest.mock import patch
+        with patch.dict(os.environ, {"WIZARD_RECIPES_DIR": str(recipes)}), patch.object(Path, "read_text", read_text):
+            self.assertEqual(self.needs()["status"], "ready")
+            status, events = self.infer()
+            self.assertEqual(status, 200)
+            self.assertEqual(events[-1]["type"], "done")
+            status, result = self.request("/v1/owner/needs/reader", owner=True)
+            self.assertEqual(status, 200, result)
+            self.assertEqual(result["models"][0]["feature"], "ask")
+            status, result = self.request("/v1/owner/needs/bad", owner=True)
+            self.assertEqual((status, result["code"]), (503, "blocked"))
+
     def test_private_data_only_owner_marked_providers_even_after_approval(self):
         self.need["private_data"] = True
         self.write_apps([self.claude.app(), self.chatgpt.app()])

@@ -100,6 +100,28 @@ def fix_for(app):
     return f"/wizard-os-home/?open={app['id']}"
 
 
+BROKEN = "_requires_malformed"
+
+
+def valid_requires(req):
+    if not isinstance(req, dict) or not isinstance(req.get("models", {}), dict) or not isinstance(req.get("services", []), list):
+        return False
+    for feature, need in req.get("models", {}).items():
+        if not identifier(feature) or not isinstance(need, dict) or need.get("tier") not in TIERS or not isinstance(need.get("tested_on"), str) or not need["tested_on"] or need.get("swap", "ask") not in ("ask", "never") or type(need.get("private_data", False)) is not bool or not strings(need.get("abilities", [])):
+            return False
+    for need in req.get("services", []):
+        if not isinstance(need, dict) or not identifier(need.get("slot")):
+            return False
+    return True
+
+
+def declared(app):
+    """An app's validated declarations; its own malformed recipe blocks only its features."""
+    if app.get(BROKEN):
+        raise Fault("blocked", "This app's declared needs are malformed; update or repair the app.", status=503)
+    return app.get("requires", {})
+
+
 class Router:
     def __init__(self, apps_file, data_dir, grants_file=None, timeout=10):
         self.apps_file = Path(apps_file)
@@ -178,6 +200,13 @@ class Router:
             raise Fault("blocked", "Invalid outgoing grant.", status=503)
         return {"X-Wizard-Grant": token} if token else {}
 
+    def warn_once(self, app_id, *args):
+        """One log line per app and problem, not one per request."""
+        warned = self.__dict__.setdefault("_warned", set())
+        if (app_id, args[0]) not in warned:
+            warned.add((app_id, args[0]))
+            LOG.warning(*args)
+
     def registry(self):
         try:
             data = load_json(self.apps_file)
@@ -194,7 +223,10 @@ class Router:
                         raise ValueError()
                 app = copy.deepcopy(app)
                 recipes = os.environ.get("WIZARD_RECIPES_DIR")
-                if recipes and "requires" not in app:
+                # Agents with no declarations need nothing from the router: never read
+                # their (often owner-only, private) recipe folder.
+                skip = app.get("type") == "agent" and not app.get("provides") and "requires" not in app
+                if recipes and "requires" not in app and not skip:
                     app_id, _, store = app.get("urn", "").partition(":")
                     if app_id == app["id"] and identifier(store):
                         root = Path(recipes) / store / "apps" / app_id
@@ -208,27 +240,31 @@ class Router:
                                 # Legacy agent/service manifests can omit version and
                                 # have no declarations. Do not let those unrelated apps
                                 # block every feature; fence any actual declaration.
-                                if "requires" in manifest:
+                                if isinstance(manifest, dict) and "requires" in manifest:
                                     if manifest.get("id") != app_id or str(manifest.get("version")) != app.get("version"):
                                         raise ValueError()
                                     app["requires"] = manifest["requires"]
                         except FileNotFoundError:
                             pass
+                        except OSError as e:
+                            # An unreadable recipe (e.g. an owner-only agent folder) is a
+                            # missing recipe: no declarations, and never blocks other apps.
+                            self.warn_once(app_id, "recipe for %s is unreadable (%s); treating it as having no declarations", app_id, type(e).__name__)
+                        except (ValueError, TypeError, AttributeError, yaml.YAMLError):
+                            # A readable recipe with a bad declaration fails closed for
+                            # this app only.
+                            self.warn_once(app_id, "recipe for %s has malformed declarations; its features are blocked", app_id)
+                            app["requires"] = None
                 # Owner deployment addresses belong in server-side config, not source
                 # or the credential-free registry. They never override uninstalled apps.
                 address = self.grants().get("provider_endpoints", {}).get(app["id"])
                 if address:
                     app["api"] = {"internal": address}
                     endpoint(app)  # Fail closed on malformed owner addresses.
-                req = app.get("requires", {})
-                if not isinstance(req, dict) or not isinstance(req.get("models", {}), dict) or not isinstance(req.get("services", []), list):
-                    raise ValueError()
-                for feature, need in req.get("models", {}).items():
-                    if not identifier(feature) or not isinstance(need, dict) or need.get("tier") not in TIERS or not isinstance(need.get("tested_on"), str) or not need["tested_on"] or need.get("swap", "ask") not in ("ask", "never") or type(need.get("private_data", False)) is not bool or not strings(need.get("abilities", [])):
-                        raise ValueError()
-                for need in req.get("services", []):
-                    if not isinstance(need, dict) or not identifier(need.get("slot")):
-                        raise ValueError()
+                if not valid_requires(app.get("requires", {})):
+                    # Fail closed for this app's features only, not the whole registry.
+                    app["requires"] = {}
+                    app[BROKEN] = True
                 apps[app["id"]] = app
             return data, apps
         except (OSError, ValueError, TypeError, AttributeError, yaml.YAMLError):
@@ -312,6 +348,7 @@ class Router:
         data, apps = self.registry()
         if app not in apps:
             raise Fault("blocked", "Calling app is not installed.", status=403)
+        declared(apps[app])
         return data, apps, apps[app].get("requires", {}), self.providers(apps)
 
     def model_need(self, app, feature, need, providers):
@@ -461,7 +498,7 @@ class Router:
             raise Fault("blocked", "Invalid service path.", status=400)
         with self.lock:
             data, apps = self.registry()
-            req = apps.get(app, {}).get("requires", {})
+            req = declared(apps.get(app, {}))
             need = next((n for n in req.get("services", []) if n["slot"] == slot), None)
             if not need:
                 raise Fault("blocked", "Service not declared by caller.", status=403)
