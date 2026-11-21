@@ -19,7 +19,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
-VERSION = "0.1.7"
+VERSION = "0.1.8"
 APP_ID = "wizard-connection-router"
 TIERS = ("fast", "standard", "frontier")
 CODES = {"signed_out", "expired", "limit", "unreachable", "provider_error", "needs_owner", "blocked"}
